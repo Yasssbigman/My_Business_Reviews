@@ -144,6 +144,26 @@
       font-size: 15px;
     }
     
+    .review-photos {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+      flex-wrap: wrap;
+    }
+    
+    .review-photo {
+      width: 150px;
+      height: 150px;
+      object-fit: cover;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    
+    .review-photo:hover {
+      transform: scale(1.05);
+    }
+    
     .review-reply {
       background: #f8f9fa;
       padding: 15px;
@@ -266,7 +286,7 @@
         // Extract place ID or create review URL
         const writeReviewBtn = document.getElementById('write-review-link');
         // Google review URL format - you'll need to get your Place ID
-        writeReviewBtn.href = `https://search.google.com/local/writereview?placeid=ChIJLxUd7epHiEgRbLR4YG2UT70`;
+        writeReviewBtn.href = `https://search.google.com/local/writereview?placeid=YOUR_PLACE_ID`;
         writeReviewBtn.target = '_blank';
       }
       
@@ -315,6 +335,20 @@
           day: 'numeric'
         });
         
+        // Handle review photos (from reviewer, not business reply)
+        let photosHTML = '';
+        if (review.media && review.media.length > 0) {
+          photosHTML = `
+            <div class="review-photos">
+              ${review.media.map(media => {
+                // Google provides different size variants, use the largest available
+                const photoUrl = media.googleUrl || media.mediaUrl || '';
+                return `<img src="${photoUrl}" alt="Review photo" class="review-photo" onclick="window.open('${photoUrl}', '_blank')">`;
+              }).join('')}
+            </div>
+          `;
+        }
+        
         return `
           <div class="review-card">
             <div class="review-header">
@@ -337,6 +371,8 @@
               <div class="review-comment">${review.comment}</div>
             ` : ''}
             
+            ${photosHTML}
+            
             ${review.reviewReply ? `
               <div class="review-reply">
                 <div class="reply-label">Response from the business</div>
@@ -348,11 +384,8 @@
       }).join('');
     }
 
-    // Load config and reviews when page loads
-    (async function init() {
-      await loadConfig();
-      await loadReviews();
-    })();
+    // Load reviews when page loads
+    loadReviews();
     
     // Auto-refresh reviews every REFRESH_INTERVAL
     setInterval(loadReviews, REFRESH_INTERVAL);
