@@ -170,7 +170,7 @@ app.get("/reviews", async (req, res) => {
       averageRating = sum / reviews.length;
     }
 
-    // Extract place ID from location metadata if available
+    // Use PLACE_ID from env, fallback to location metadata
     const placeId = PLACE_ID || locationInfo.metadata?.placeId || null;
     const businessName = locationInfo.title || "Our Business";
 
