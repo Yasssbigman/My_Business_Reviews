@@ -110,11 +110,12 @@ app.get("/locations", requireApiKey, async (req, res) => {
 });
 
 /**
- * List Reviews (PUBLIC - this is fine to be public)
+ * List Reviews (PUBLIC) - Enhanced with calculated metrics
  */
 app.get("/reviews", async (req, res) => {
   try {
     const LOCATION_NAME = process.env.LOCATION_NAME;
+    const PLACE_ID = process.env.PLACE_ID; // Add this to your .env file
 
     if (!LOCATION_NAME) {
       return res.status(400).json({ error: "LOCATION_NAME not configured" });
@@ -122,7 +123,8 @@ app.get("/reviews", async (req, res) => {
 
     const accessToken = await getAccessToken();
 
-    const response = await axios.get(
+    // Fetch reviews
+    const reviewsResponse = await axios.get(
       `https://mybusiness.googleapis.com/v4/${LOCATION_NAME}/reviews`,
       {
         headers: {
@@ -134,10 +136,61 @@ app.get("/reviews", async (req, res) => {
       }
     );
 
-    res.json(response.data);
+    // Fetch location info for business name and metadata
+    let locationInfo = {};
+    try {
+      const locationResponse = await businessInfoClient.locations.get({
+        name: LOCATION_NAME,
+        readMask: "name,title,metadata"
+      });
+      locationInfo = locationResponse.data;
+    } catch (err) {
+      console.error("Could not fetch location info:", err.message);
+    }
+
+    const reviews = reviewsResponse.data.reviews || [];
+    
+    // Calculate average rating and total count
+    let totalReviewCount = reviews.length;
+    let averageRating = 0;
+    
+    if (reviews.length > 0) {
+      const starValues = {
+        'FIVE': 5,
+        'FOUR': 4,
+        'THREE': 3,
+        'TWO': 2,
+        'ONE': 1
+      };
+      
+      const sum = reviews.reduce((acc, review) => {
+        return acc + (starValues[review.starRating] || 0);
+      }, 0);
+      
+      averageRating = sum / reviews.length;
+    }
+
+    // Extract place ID from location metadata if available
+    const placeId = PLACE_ID || locationInfo.metadata?.placeId || null;
+    const businessName = locationInfo.title || "Our Business";
+
+    // Return enhanced response
+    res.json({
+      reviews: reviews,
+      averageRating: averageRating,
+      totalReviewCount: totalReviewCount,
+      name: businessName,
+      placeId: placeId
+    });
+
   } catch (err) {
     console.error("Reviews Error:", err.response?.data || err.message);
-    res.status(500).json({ error: err.response?.data || err.message });
+    res.status(500).json({ 
+      error: err.response?.data || err.message,
+      reviews: [],
+      averageRating: 0,
+      totalReviewCount: 0
+    });
   }
 });
 
