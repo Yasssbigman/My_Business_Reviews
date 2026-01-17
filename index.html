@@ -69,6 +69,8 @@
       transition: all 0.3s ease;
       margin-top: 15px;
       box-shadow: 0 2px 6px rgba(239, 159, 21, 0.3);
+      border: none;
+      cursor: pointer;
     }
     
     .write-review-btn:hover {
@@ -266,6 +268,43 @@
       font-size: 14px;
     }
 
+    .load-more-container {
+      text-align: center;
+      padding: 30px 20px;
+    }
+
+    .load-more-btn {
+      background: #496986;
+      color: #fff;
+      padding: 14px 40px;
+      border-radius: 8px;
+      border: none;
+      font-weight: 600;
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 6px rgba(73, 105, 134, 0.3);
+    }
+
+    .load-more-btn:hover:not(:disabled) {
+      background: #3a5468;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(73, 105, 134, 0.4);
+    }
+
+    .load-more-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .load-more-info {
+      color: #666;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+
     @media (max-width: 600px) {
       body {
         padding: 15px;
@@ -310,14 +349,38 @@
     <div id="reviews-container">
       <div class="loading">Loading reviews</div>
     </div>
+
+    <div id="load-more-container" style="display: none;">
+      <div class="load-more-container">
+        <button id="load-more-btn" class="load-more-btn">Load More Reviews</button>
+        <div class="load-more-info" id="load-more-info"></div>
+      </div>
+    </div>
   </div>
 
   <script>
-    // Replace this with your actual API endpoint URL
+    // Configuration
     const API_ENDPOINT = '/reviews';
-    
-    // Refresh interval in milliseconds (default: 5 minutes)
+    const REVIEWS_PER_PAGE = 15; // Load 15 reviews at a time
     const REFRESH_INTERVAL = 5 * 60 * 1000;
+
+    // State
+    let allReviews = [];
+    let displayedReviews = 0;
+    let businessData = {};
+
+    // Function to notify parent window of height changes
+    function notifyParentOfHeight() {
+      try {
+        const height = document.documentElement.scrollHeight;
+        window.parent.postMessage({ 
+          type: 'iframe-height',
+          height: height 
+        }, '*');
+      } catch (e) {
+        // If not in iframe or postMessage fails, ignore
+      }
+    }
 
     async function loadReviews() {
       try {
@@ -328,7 +391,18 @@
         }
         
         const data = await response.json();
-        displayReviews(data);
+        allReviews = data.reviews || [];
+        businessData = {
+          averageRating: data.averageRating,
+          totalReviewCount: data.totalReviewCount,
+          name: data.name,
+          placeId: data.placeId
+        };
+        
+        // Reset and display initial batch
+        displayedReviews = 0;
+        displayReviewBatch();
+        
       } catch (error) {
         console.error('Error loading reviews:', error);
         document.getElementById('reviews-container').innerHTML = `
@@ -337,25 +411,23 @@
             <p>Please try again later.</p>
           </div>
         `;
+        setTimeout(notifyParentOfHeight, 100);
       }
     }
 
-    function displayReviews(data) {
-      const { reviews = [], averageRating, totalReviewCount, name, placeId } = data;
+    function displayReviewBatch() {
+      const { averageRating, totalReviewCount, name, placeId } = businessData;
       
       // Set up the "Write a Review" link
       const writeReviewBtn = document.getElementById('write-review-link');
       
       if (placeId) {
-        // Use the Place ID from the API
         writeReviewBtn.href = `https://search.google.com/local/writereview?placeid=${placeId}`;
         writeReviewBtn.target = '_blank';
       } else if (name) {
-        // Fallback: Use business name in search
         writeReviewBtn.href = `https://www.google.com/search?q=${encodeURIComponent(name + ' reviews')}`;
         writeReviewBtn.target = '_blank';
       } else {
-        // No place ID or name available
         writeReviewBtn.disabled = true;
         writeReviewBtn.style.cursor = 'not-allowed';
         writeReviewBtn.title = 'Place ID not configured';
@@ -377,16 +449,17 @@
         `;
       }
       
-      // Display reviews
       const container = document.getElementById('reviews-container');
       
-      if (reviews.length === 0) {
+      if (allReviews.length === 0) {
         container.innerHTML = `
           <div class="no-reviews">
             <h2>No reviews yet</h2>
             <p>Be the first to leave a review!</p>
           </div>
         `;
+        document.getElementById('load-more-container').style.display = 'none';
+        setTimeout(notifyParentOfHeight, 100);
         return;
       }
 
@@ -395,13 +468,18 @@
       if (!placeId) {
         alertHTML = `
           <div class="alert">
-            <strong>Note:</strong> Add your PLACE_ID to your environment variables to enable the "Write a Review" button. 
-            Find your Place ID in Google Business Profile or by visiting the /locations?key=YOUR_API_KEY endpoint.
+            <strong>Note:</strong> Add your PLACE_ID to your environment variables to enable the "Write a Review" button.
           </div>
         `;
       }
       
-      container.innerHTML = alertHTML + reviews.map(review => {
+      // Determine which reviews to show
+      const isFirstLoad = displayedReviews === 0;
+      const reviewsToShow = allReviews.slice(0, displayedReviews + REVIEWS_PER_PAGE);
+      displayedReviews = reviewsToShow.length;
+      
+      // Generate HTML for reviews
+      const reviewsHTML = reviewsToShow.map(review => {
         const starCount = {
           'FIVE': 5,
           'FOUR': 4,
@@ -417,7 +495,6 @@
           day: 'numeric'
         });
         
-        // Handle review photos
         let photosHTML = '';
         if (review.media && review.media.length > 0) {
           photosHTML = `
@@ -430,7 +507,6 @@
           `;
         }
         
-        // Generate fallback avatar
         const avatarFallback = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48'%3E%3Ccircle cx='24' cy='24' r='24' fill='%23e0e0e0'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='central' text-anchor='middle' fill='%23666' font-size='20' font-family='Arial'%3E${encodeURIComponent(review.reviewer.displayName.charAt(0).toUpperCase())}%3C/text%3E%3C/svg%3E`;
         
         return `
@@ -466,15 +542,76 @@
           </div>
         `;
       }).join('');
+      
+      container.innerHTML = alertHTML + reviewsHTML;
+      
+      // Update load more button
+      updateLoadMoreButton();
+      
+      // Notify parent of height change
+      setTimeout(notifyParentOfHeight, 100);
     }
 
-    // Load reviews when page loads
+    function updateLoadMoreButton() {
+      const loadMoreContainer = document.getElementById('load-more-container');
+      const loadMoreBtn = document.getElementById('load-more-btn');
+      const loadMoreInfo = document.getElementById('load-more-info');
+      
+      const remainingReviews = allReviews.length - displayedReviews;
+      
+      if (remainingReviews > 0) {
+        loadMoreContainer.style.display = 'block';
+        loadMoreBtn.disabled = false;
+        loadMoreInfo.textContent = `Showing ${displayedReviews} of ${allReviews.length} reviews`;
+      } else if (allReviews.length > REVIEWS_PER_PAGE) {
+        loadMoreContainer.style.display = 'block';
+        loadMoreBtn.disabled = true;
+        loadMoreBtn.textContent = 'All Reviews Loaded';
+        loadMoreInfo.textContent = `Showing all ${allReviews.length} reviews`;
+      } else {
+        loadMoreContainer.style.display = 'none';
+      }
+    }
+
+    function loadMoreReviews() {
+      const loadMoreBtn = document.getElementById('load-more-btn');
+      loadMoreBtn.disabled = true;
+      loadMoreBtn.textContent = 'Loading...';
+      
+      setTimeout(() => {
+        displayReviewBatch();
+        loadMoreBtn.textContent = 'Load More Reviews';
+      }, 300);
+    }
+
+    // Event listeners
+    document.getElementById('load-more-btn').addEventListener('click', loadMoreReviews);
+
+    // Load initial reviews
     loadReviews();
     
     // Auto-refresh reviews every REFRESH_INTERVAL
     setInterval(loadReviews, REFRESH_INTERVAL);
     
-    console.log(`✅ Reviews loaded. Auto-refresh every ${REFRESH_INTERVAL / 1000 / 60} minutes`);
+    // Send height updates on window resize
+    window.addEventListener('resize', notifyParentOfHeight);
+    
+    // Observe DOM changes to update height
+    const observer = new MutationObserver(() => {
+      notifyParentOfHeight();
+    });
+    
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    
+    // Send initial height
+    window.addEventListener('load', () => {
+      setTimeout(notifyParentOfHeight, 500);
+    });
+    
+    console.log(`✅ Reviews loaded. Showing ${REVIEWS_PER_PAGE} at a time. Auto-refresh every ${REFRESH_INTERVAL / 1000 / 60} minutes`);
   </script>
 </body>
 </html>
