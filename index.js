@@ -11,6 +11,9 @@ const PORT = process.env.PORT || 3000;
 // Simple API key check
 const API_KEY = process.env.API_KEY || "change-me-in-vercel";
 
+// Cache file path
+const CACHE_FILE = path.join(__dirname, "reviews-cache.json");
+
 function requireApiKey(req, res, next) {
   const key = req.query.key;
   if (key !== API_KEY) {
@@ -58,6 +61,67 @@ const businessInfoClient = google.mybusinessbusinessinformation({
 async function getAccessToken() {
   const { token } = await oauth2Client.getAccessToken();
   return token;
+}
+
+/**
+ * Load cached reviews from file
+ */
+function loadCache() {
+  try {
+    if (fs.existsSync(CACHE_FILE)) {
+      const data = fs.readFileSync(CACHE_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error("Error loading cache:", err.message);
+  }
+  return { reviews: [], lastUpdated: null };
+}
+
+/**
+ * Save reviews to cache file
+ */
+function saveCache(cache) {
+  try {
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf8');
+    console.log(`✅ Cache saved: ${cache.reviews.length} reviews`);
+  } catch (err) {
+    console.error("Error saving cache:", err.message);
+  }
+}
+
+/**
+ * Merge new reviews with cached reviews
+ * Reviews are identified by reviewId (unique identifier from Google)
+ */
+function mergeReviews(cachedReviews, newReviews) {
+  const reviewMap = new Map();
+  
+  // Add all cached reviews to map
+  cachedReviews.forEach(review => {
+    if (review.reviewId) {
+      reviewMap.set(review.reviewId, review);
+    }
+  });
+  
+  // Add or update with new reviews
+  newReviews.forEach(review => {
+    if (review.reviewId) {
+      // If review exists, update it (in case of edits)
+      // If it's new, add it
+      reviewMap.set(review.reviewId, review);
+    }
+  });
+  
+  // Convert back to array and sort by date (newest first)
+  const merged = Array.from(reviewMap.values());
+  merged.sort((a, b) => {
+    const dateA = new Date(a.createTime);
+    const dateB = new Date(b.createTime);
+    return dateB - dateA;
+  });
+  
+  return merged;
 }
 
 /**
@@ -110,31 +174,54 @@ app.get("/locations", requireApiKey, async (req, res) => {
 });
 
 /**
- * List Reviews (PUBLIC) - Enhanced with calculated metrics
+ * List Reviews (PUBLIC) - Enhanced with caching mechanism
  */
 app.get("/reviews", async (req, res) => {
   try {
     const LOCATION_NAME = process.env.LOCATION_NAME;
-    const PLACE_ID = process.env.PLACE_ID; // Add this to your .env file
+    const PLACE_ID = process.env.PLACE_ID;
 
     if (!LOCATION_NAME) {
       return res.status(400).json({ error: "LOCATION_NAME not configured" });
     }
 
-    const accessToken = await getAccessToken();
+    // Load cached reviews
+    const cache = loadCache();
+    let newReviews = [];
+    let fetchError = null;
 
-    // Fetch reviews
-    const reviewsResponse = await axios.get(
-      `https://mybusiness.googleapis.com/v4/${LOCATION_NAME}/reviews`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-        params: {
-          pageSize: 50,
-        },
-      }
-    );
+    // Try to fetch fresh reviews from Google
+    try {
+      const accessToken = await getAccessToken();
+
+      const reviewsResponse = await axios.get(
+        `https://mybusiness.googleapis.com/v4/${LOCATION_NAME}/reviews`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          params: {
+            pageSize: 50,
+          },
+        }
+      );
+
+      newReviews = reviewsResponse.data.reviews || [];
+      console.log(`✅ Fetched ${newReviews.length} reviews from Google`);
+    } catch (err) {
+      console.error("Error fetching reviews from Google:", err.message);
+      fetchError = err;
+      // Continue with cached reviews if fetch fails
+    }
+
+    // Merge new reviews with cached reviews
+    const allReviews = mergeReviews(cache.reviews, newReviews);
+    
+    // Save updated cache
+    saveCache({
+      reviews: allReviews,
+      lastUpdated: new Date().toISOString()
+    });
 
     // Fetch location info for business name and metadata
     let locationInfo = {};
@@ -148,13 +235,11 @@ app.get("/reviews", async (req, res) => {
       console.error("Could not fetch location info:", err.message);
     }
 
-    const reviews = reviewsResponse.data.reviews || [];
-    
     // Calculate average rating and total count
-    let totalReviewCount = reviews.length;
+    let totalReviewCount = allReviews.length;
     let averageRating = 0;
     
-    if (reviews.length > 0) {
+    if (allReviews.length > 0) {
       const starValues = {
         'FIVE': 5,
         'FOUR': 4,
@@ -163,11 +248,11 @@ app.get("/reviews", async (req, res) => {
         'ONE': 1
       };
       
-      const sum = reviews.reduce((acc, review) => {
+      const sum = allReviews.reduce((acc, review) => {
         return acc + (starValues[review.starRating] || 0);
       }, 0);
       
-      averageRating = sum / reviews.length;
+      averageRating = sum / allReviews.length;
     }
 
     // Use PLACE_ID from env, fallback to location metadata
@@ -176,20 +261,36 @@ app.get("/reviews", async (req, res) => {
 
     // Return enhanced response
     res.json({
-      reviews: reviews,
+      reviews: allReviews,
       averageRating: averageRating,
       totalReviewCount: totalReviewCount,
       name: businessName,
-      placeId: placeId
+      placeId: placeId,
+      cached: fetchError ? true : false, // Indicate if serving from cache due to error
+      cacheInfo: {
+        totalCached: allReviews.length,
+        newFromGoogle: newReviews.length,
+        lastUpdated: cache.lastUpdated
+      }
     });
 
   } catch (err) {
     console.error("Reviews Error:", err.response?.data || err.message);
+    
+    // Even on complete failure, try to serve cached reviews
+    const cache = loadCache();
+    
     res.status(500).json({ 
       error: err.response?.data || err.message,
-      reviews: [],
+      reviews: cache.reviews || [],
       averageRating: 0,
-      totalReviewCount: 0
+      totalReviewCount: cache.reviews?.length || 0,
+      cached: true,
+      cacheInfo: {
+        totalCached: cache.reviews?.length || 0,
+        newFromGoogle: 0,
+        lastUpdated: cache.lastUpdated
+      }
     });
   }
 });
